@@ -34,12 +34,57 @@ type MergeResult = {
 
 const MAX_PREVIEW_ROWS = 8;
 
-function normalizeCell(value: unknown): CellValue {
-  if (value === undefined || value === null) return null;
-  if (value instanceof Date) return value;
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return value;
+function isBlankCell(value: CellValue) {
+  return value === null || String(value).trim() === "";
+}
+
+function normalizeCell(cell: XLSX.CellObject | undefined): CellValue {
+  if (!cell || cell.v === undefined || cell.v === null) return null;
+  if (cell.v instanceof Date) return cell.v;
+
+  if (cell.t === "n" && typeof cell.v === "number") {
+    const displayedValue = typeof cell.w === "string" ? cell.w.trim() : "";
+    const compactDisplay = displayedValue.replace(/[, ]/g, "");
+
+    if (/^0\d+/.test(compactDisplay) || /^\d{12,}$/.test(compactDisplay) || /e\+/i.test(displayedValue)) {
+      return displayedValue || String(cell.v);
+    }
+
+    return cell.v;
   }
+
+  if (typeof cell.v === "string" || typeof cell.v === "boolean") {
+    return cell.v;
+  }
+
+  return String(cell.v);
+}
+
+function readSheetRows(sheet: XLSX.WorkSheet): CellValue[][] {
+  if (!sheet["!ref"]) return [];
+
+  const range = XLSX.utils.decode_range(sheet["!ref"]);
+  const rows: CellValue[][] = [];
+
+  for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
+    const row: CellValue[] = [];
+
+    for (let columnIndex = range.s.c; columnIndex <= range.e.c; columnIndex += 1) {
+      const address = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
+      row.push(normalizeCell(sheet[address]));
+    }
+
+    if (row.some((value) => !isBlankCell(value))) {
+      rows.push(row);
+    }
+  }
+
+  return rows;
+}
+
+function formatCellValue(value: CellValue) {
+  if (value === null) return "";
+  if (value instanceof Date) return value.toLocaleDateString("zh-CN");
   return String(value);
 }
 
@@ -72,7 +117,7 @@ function mergeWorkbooks(files: WorkbookFile[]): MergeResult {
     }
 
     for (const dataRow of sheet.rows.slice(headerIndex + 1)) {
-      const hasValue = dataRow.some((value) => value !== null && String(value).trim() !== "");
+      const hasValue = dataRow.some((value) => !isBlankCell(value));
       if (!hasValue) continue;
 
       const row: Record<string, CellValue> = {
@@ -97,16 +142,10 @@ async function readWorkbook(file: File): Promise<WorkbookFile> {
   const workbook = XLSX.read(buffer, { cellDates: true });
   const sheets = workbook.SheetNames.map((sheetName) => {
     const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
-      header: 1,
-      blankrows: false,
-      defval: null,
-      raw: false,
-    });
 
     return {
       name: sheetName,
-      rows: rows.map((row) => row.map(normalizeCell)),
+      rows: readSheetRows(sheet),
     };
   });
 
@@ -291,7 +330,7 @@ function App() {
                           <tr className={rowIndex + 1 === file.headerRow ? "selected-row" : ""} key={rowIndex}>
                             <th>{rowIndex + 1}</th>
                             {row.slice(0, 8).map((cell, cellIndex) => (
-                              <td key={cellIndex}>{cell === null ? "" : String(cell)}</td>
+                              <td key={cellIndex}>{formatCellValue(cell)}</td>
                             ))}
                           </tr>
                         ))}
@@ -319,7 +358,7 @@ function App() {
                   {mergeResult.rows.slice(0, 10).map((row, rowIndex) => (
                     <tr key={rowIndex}>
                       {mergeResult.headers.slice(0, 8).map((header) => (
-                        <td key={header}>{row[header] === null || row[header] === undefined ? "" : String(row[header])}</td>
+                        <td key={header}>{formatCellValue(row[header] ?? null)}</td>
                       ))}
                     </tr>
                   ))}
